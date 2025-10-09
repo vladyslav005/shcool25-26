@@ -1,0 +1,5 @@
+Definition succ (x : nat) : nat := x + 1.
+
+
+
+Compute succ 4343.
