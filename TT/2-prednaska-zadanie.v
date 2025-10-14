@@ -303,10 +303,71 @@ Proof.
 Qed.
 
 
-Require Import Coq.Init.Nat.
 
 
 
+Theorem mul_0  : forall m n : nat,
+    n * 0 = 0.
+Proof.
+  intros.
+  induction n.
+  simpl.
+  
+  reflexivity.
+  simpl.
+  rewrite IHn.
+  reflexivity.
+Qed.
+
+Theorem mul_0'  : forall m n : nat,
+    0 * n = 0.
+Proof.
+  intros.
+  induction n.
+  simpl.
+  
+  reflexivity.
+  simpl.
+  reflexivity.
+Qed.
+
+
+Theorem mul_0_sm  : forall m n : nat,
+    0 * S m = 0.
+Proof.
+  intros.
+  simpl.
+  reflexivity.
+Qed.
+
+Theorem mul_0_ssm  : forall m n : nat,
+    0 * S(S m) = 0.
+Proof.
+  intros.
+  simpl.
+  reflexivity.
+Qed.
+
+
+Theorem mult_Sn : forall n m : nat,
+  n * S m = n * m + n.
+Proof.
+  intros n m.
+  induction n as [| n' IH].
+  - (* base case: n = 0 *)
+    simpl. reflexivity.
+  - (* inductive case: n = S n' *)
+    simpl.
+    rewrite IH.
+    (* Now we must show: m + n' + S n' = (m + n') + S n' *)
+    simpl.
+    rewrite plus_n_Sm.
+    rewrite plus_n_Sm.
+    rewrite add_assoc.
+    simpl.
+     reflexivity.
+Qed.
+  
 
 (* Úloha 3.10: Komutativnosť násobenia *)
 Theorem mul_comm : forall m n : nat,
@@ -316,7 +377,7 @@ Proof.
   induction m as [| m IH]; simpl.
   - rewrite mul_0_r. reflexivity.
   - rewrite IH.
-    rewrite Nat.mul_succ_r.
+    rewrite mult_Sn.
     rewrite add_comm.
     reflexivity.
 Qed.
@@ -420,16 +481,6 @@ Proof.
   reflexivity.
 Qed.
 
-Lemma mul_0 : forall n : nat,
-  n * 0 = 0 .
-Proof.
-  induction n.
-  simpl.
-  reflexivity.
-  simpl.
-  rewrite IHn.
-  reflexivity.
-Qed.
 
 (* Úloha 3.18: Distribútivita násobenia 
 cez sčítanie sprava *)
