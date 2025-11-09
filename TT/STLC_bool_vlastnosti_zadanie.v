@@ -507,7 +507,7 @@ Theorem progress' : forall t T,
      <{ empty |-- t \in T }> ->
      value t \/ exists t', t --> t'.
 Proof.
-induction t; intros T HT; eauto.
+  induction t; intros T HT; eauto.
   - (* tm_var *)
     inversion HT; subst.
     match goal with

@@ -332,8 +332,8 @@ Inductive has_type : context -> tm -> ty -> Prop :=
       <{ Gamma |-- t1 t2 \in T1 }>
 
 (** DOPLNIT *)
-  | T_Const : forall Gamma k,
-      <{ Gamma |-- $(k) \in Nat }>
+  | T_Const : forall Gamma (n : nat),
+    <{ Gamma |-- $(n) \in Nat }>
 
   | T_Succ : forall Gamma t1,
       <{ Gamma |-- t1 \in Nat }> ->
@@ -377,9 +377,9 @@ Proof.
       * 
         apply T_Var.
         unfold update, t_update, x, y; simpl. reflexivity.
-    + 
+    +  
       apply T_Const.
-  - 
+  -  
     apply T_Const.
 Qed.
 
@@ -615,7 +615,7 @@ Proof.
   intros t HT Hv.
   inversion Hv; subst.
   
-  - (* v_abs *) inversion HT. eauto.
+  - (* v_abs *) inversion HT.
   - (* v_const *) eauto.
 Qed.
 
@@ -643,16 +643,20 @@ intros t T HT.
 (*       * exists <{ t1 t2' }>. apply ST_App2; assumption. *)
 (*     + exists <{ t1' t2 }>. apply ST_App1; assumption.
  *)
-   - (* T_Const *) 
-    left. constructor.
-   
+(*    - (* T_Const *)  *)
+
 
 
   - (* T_Succ *)
-    destruct IHHT as [Hv | [t' Hs]].
-    + destruct (canonical_forms_nat t1 HT Hv) as [n ->].
-      right. exists (S n). apply ST_SuccConst.
-    + right. exists <{ succ t' }>. apply ST_Succ; assumption.
+  destruct IHHT as [Hv | [t' Hs]]. eauto.
+  + (* t1 is a value; by canonical forms it is a numeral *)
+    (* IMPORTANT: use a different name, e.g. k, not n *)
+    destruct (canonical_forms_nat n HT Hv) as [k Hk].
+    subst.                       (* rewrites n to $(k) *)
+    right. eexists.              (* we pick the target term *)
+    apply ST_SuccConst.          (* succ (k) --> S k *)
+  + (* t1 can step *)
+    right. eexists. apply ST_Succ. exact Hs.
 
   - (* T_Pred *)
     destruct IHHT as [Hv | [t' Hs]].
