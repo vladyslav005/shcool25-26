@@ -107,6 +107,10 @@ Notation "'if0' x 'then' y 'else' z" :=
                     y custom stlc_tm at level 0,
                     z custom stlc_tm at level 0) : stlc_scope.
 
+
+
+
+
 Coercion tm_const : nat >-> tm.
 
 Definition x : string := "x".
@@ -320,16 +324,16 @@ Inductive has_type : context -> tm -> ty -> Prop :=
       Gamma x = Some T1 ->
       <{ Gamma |-- x \in T1 }>
   | T_Abs : forall Gamma x T1 T2 t1,
-      <{ x |-> T2 ; Gamma |-- t1 \in T1 }> ->
-      <{ Gamma |-- \x:T2, t1 \in T2 -> T1 }>
+      <{ x |-> T1 ; Gamma |-- t1 \in T2 }> ->
+      <{ Gamma |-- \x:T1, t1 \in T1 -> T2 }>
   | T_App : forall T1 T2 Gamma t1 t2,
       <{ Gamma |-- t1 \in T2 -> T1 }> ->
       <{ Gamma |-- t2 \in T2 }> ->
       <{ Gamma |-- t1 t2 \in T1 }>
 
 (** DOPLNIT *)
- | T_Const : forall Gamma n,
-      <{ Gamma |-- $(n) \in Nat }>
+  | T_Const : forall Gamma k,
+      <{ Gamma |-- $(k) \in Nat }>
 
   | T_Succ : forall Gamma t1,
       <{ Gamma |-- t1 \in Nat }> ->
@@ -354,7 +358,7 @@ where "<{ Gamma '|--' t '\in' T }>" :=
   (has_type Gamma t T) : stlc_scope.
 
 Hint Constructors has_type : core.
-Hint Constructors has_type : core.
+
 
 (* Príklad *)
 Example Nat_typing_example :
@@ -465,6 +469,7 @@ Qed.
 (** Úloha 6 ★ Dokážte nasledujúcu vetu. *)
 
 (* ================================================================= *)
+
 From Coq Require Import Logic.FunctionalExtensionality.
 Lemma t_update_shadow : forall (A : Type) (m : total_map A) x v1 v2,
   (x !-> v2 ; x !-> v1 ; m) = (x !-> v2 ; m).
@@ -558,7 +563,6 @@ Proof.
       rewrite update_permute; auto.
 Qed.
 
-
 (* ================================================================= *)
 
 (* Zachovanie typu (Preservation) *)
@@ -590,13 +594,93 @@ Qed.
 (** Úloha 7 ★ Dokážte nasledujúcu vetu. *)
 (* ================================================================= *)
 
+Lemma canonical_forms_fun : forall t T1 T2,
+  <{ empty |-- t \in T1 -> T2 }> ->
+  value t ->
+  exists x u, t = <{\x:T1, u}>.
+Proof.
+  intros t T1 T2 HT Hv.
+  inversion Hv; subst.
+  - (* t is an abstraction *)
+    inversion HT; subst. eauto.
+  - (* t is a numeric constant: impossible to have function type *)
+    inversion HT.
+Qed.
+
+Lemma canonical_forms_nat : forall t,
+  <{ empty |-- t \in Nat }> ->
+  value t ->
+  exists n, t = <{ $(n) }>.
+Proof.
+  intros t HT Hv.
+  inversion Hv; subst.
+  
+  - (* v_abs *) inversion HT. eauto.
+  - (* v_const *) eauto.
+Qed.
+
 (* ================================================================= *)
 (* Progress *)
 Theorem progress : forall t T,
   <{ empty |-- t \in T }> ->
   value t \/ exists t', t --> t'.
-Proof with eauto.  
-Admitted.
+Proof with eauto.
+intros t T HT.
+  remember empty as Gamma.
+  induction HT; subst Gamma; auto.
+  - (* T_Var *)
+    (* no variables are typable in the empty context *)
+    discriminate H.
+
+  - (* T_App *)
+    right.
+    destruct IHHT1 as [Hv1 | [t1' Hs1]]; eauto.
+    + destruct IHHT2 as [Hv2 | [t2' Hs2]]; eauto.
+      * (* both are values: function must be an abstraction *)
+        eapply canonical_forms_fun in HT1; [|assumption].
+        destruct HT1 as [x [u Heq]]; subst.
+        exists <{ [x:=t2] u }>. apply ST_AppAbs. assumption.
+(*       * exists <{ t1 t2' }>. apply ST_App2; assumption. *)
+(*     + exists <{ t1' t2 }>. apply ST_App1; assumption.
+ *)
+   - (* T_Const *) 
+    left. constructor.
+   
+
+
+  - (* T_Succ *)
+    destruct IHHT as [Hv | [t' Hs]].
+    + destruct (canonical_forms_nat t1 HT Hv) as [n ->].
+      right. exists (S n). apply ST_SuccConst.
+    + right. exists <{ succ t' }>. apply ST_Succ; assumption.
+
+  - (* T_Pred *)
+    destruct IHHT as [Hv | [t' Hs]].
+    + destruct (canonical_forms_nat t1 HT Hv) as [n ->].
+      destruct n as [|n'].
+      * right. exists 0. apply ST_PredZero.
+      * right. exists n'. apply ST_PredSucc.
+    + right. exists <{ pred t' }>. apply ST_Pred; assumption.
+
+  - (* T_Mult *)
+    right.
+    destruct IHHT1 as [Hv1 | [t1' Hs1]]; eauto.
+    + destruct IHHT2 as [Hv2 | [t2' Hs2]]; eauto.
+      * destruct (canonical_forms_nat t1 HT1 Hv1) as [n ->].
+        destruct (canonical_forms_nat t2 HT2 Hv2) as [m ->].
+        exists (n * m). apply ST_MultConst.
+      * exists <{ t1 * t2' }>. apply ST_Mult2; assumption.
+    + exists <{ t1' * t2 }>. apply ST_Mult1; assumption.
+
+  - (* T_If0 *)
+    right.
+    destruct IHHT1 as [Hv1 | [t1' Hs1]]; eauto.
+    + destruct (canonical_forms_nat t1 HT1 Hv1) as [n ->].
+      destruct n as [|n'].
+      * exists t2. apply ST_If0Zero.
+      * exists t3. apply ST_If0Succ.
+    + exists <{ if0 t1' then t2 else t3 }>. apply ST_If0; assumption.
+Qed.
 
 
 End STLCArith.
