@@ -107,6 +107,10 @@ Notation "'if0' x 'then' y 'else' z" :=
                     y custom stlc_tm at level 0,
                     z custom stlc_tm at level 0) : stlc_scope.
 
+
+
+
+
 Coercion tm_const : nat >-> tm.
 
 Definition x : string := "x".
@@ -141,9 +145,32 @@ Uistite sa, že Rocq akceptuje celý súbor pred odovzdaním.
 (** ----------------------------------------------- **)
 (** Úloha 1 ★ Doplnte definíciu substitúcie. *)
 
-Fixpoint subst (x : string) (s : tm) (t : tm) : tm
-(* NAHRADIŤ TENTO RIADOK S ":= vaša_definícia ." *). 
-Admitted.
+Reserved Notation "'[' x ':=' s ']' t"
+  (in custom stlc_tm at level 5, x global,
+   s custom stlc_tm, t custom stlc_tm at next level,
+   right associativity).
+
+Fixpoint subst (x : string) (s : tm) (t : tm)  : tm :=
+  match t with
+  | tm_var y =>
+      if String.eqb x y then s else t
+  | tm_abs y T t1 =>
+      if String.eqb x y then t else tm_abs y T (subst x s t1)
+  | tm_app t1 t2 =>
+      tm_app (subst x s t1) (subst x s t2)
+  | tm_const n =>
+      tm_const n
+  | tm_succ t1 =>
+      tm_succ (subst x s t1)
+  | tm_pred t1 =>
+      tm_pred (subst x s t1)
+  | tm_mult t1 t2 =>
+      tm_mult (subst x s t1) (subst x s t2)
+  | tm_if0 t1 t2 t3 =>
+      tm_if0 (subst x s t1) (subst x s t2) (subst x s t3)
+  end
+
+where "'[' x ':=' s ']' t" := (subst x s t) (in custom stlc_tm).
 (** 
 Po definícii funkcie je potrebné odstrániť bodku na konci 
 a pridať nasledujúci riadok
@@ -155,8 +182,9 @@ where "'[' x ':=' s ']' t" := (subst x s t) (v custom stlc_tm).
 (** Úloha 2 ★ Doplnte definíciu hodnoty. *)
 
 Inductive value : tm -> Prop :=
-  (* FILL IN HERE *)
-.
+| v_abs   : forall x T t, value <{\x:T, t}>
+| v_const : forall n,    value (tm_const n).
+
 
 Hint Constructors value : core.
 
@@ -167,7 +195,56 @@ Reserved Notation "t '-->' t'" (at level 40).
 (** Úloha 3 ★ Doplnte definíciu štrukturálnej operačnej sémantiky . *)
 
 Inductive step : tm -> tm -> Prop :=
-  (* DOPLNIT *)
+  (* β-reduction *)
+  | ST_AppAbs : forall x T t1 v2,
+      value v2 ->
+      <{ (\x:$(T), t1) v2 }> --> <{ [x:=v2] t1 }>
+
+  (* application congruence *)
+  | ST_App1 : forall t1 t1' t2,
+      t1 --> t1' ->
+      <{ t1 t2 }> --> <{ t1' t2 }>
+  | ST_App2 : forall v1 t2 t2',
+      value v1 ->
+      t2 --> t2' ->
+      <{ v1 t2 }> --> <{ v1 t2' }>
+
+  (* succ *)
+  | ST_Succ : forall t1 t1',
+      t1 --> t1' ->
+      <{ succ t1 }> --> <{ succ t1' }>
+  | ST_SuccConst : forall (n : nat),
+      <{ succ $(n) }> --> <{ $(S n) }>
+
+  (* pred *)
+  | ST_Pred : forall t1 t1',
+      t1 --> t1' ->
+      <{ pred t1 }> --> <{ pred t1' }>
+  | ST_PredZero :
+      <{ pred 0 }> --> 0
+  | ST_PredSucc : forall (n : nat),
+      <{ pred $(S n) }> --> n
+
+  (* multiplication *)
+  | ST_Mult1 : forall t1 t1' t2,
+      t1 --> t1' ->
+      <{ t1 * t2 }> --> <{ t1' * t2 }>
+  | ST_Mult2 : forall v1 t2 t2',
+      value v1 ->
+      t2 --> t2' ->
+      <{ v1 * t2 }> --> <{ v1 * t2' }>
+  | ST_MultConst : forall (n m : nat),
+      <{ $(n) * $(m) }> --> <{ $(n * m) }>
+
+  (* if0 *)
+  | ST_If0 : forall t1 t1' t2 t3,
+      t1 --> t1' ->
+      <{ if0 t1 then t2 else t3 }> --> <{ if0 t1' then t2 else t3 }>
+  | ST_If0Zero : forall t2 t3,
+      <{ if0 0 then t2 else t3 }> --> t2
+  | ST_If0Succ : forall (n : nat) t2 t3,
+      <{ if0 $(S n) then t2 else t3 }> --> t3
+
 where "t '-->' t'" := (step t t').
 
 Inductive multistep : tm -> tm -> Prop :=
@@ -183,8 +260,21 @@ Hint Constructors step : core.
 (* Príklad *)
 Example Nat_step_example : exists t,
 <{(\x: Nat, \y: Nat, x * y ) $(3) $(2) }> -->* t.
-Proof.  Admitted.
-
+Proof.
+  exists 6.
+  eapply multi_tran.
+  - 
+    apply ST_App1.
+    apply ST_AppAbs. constructor.
+  - eapply multi_tran.
+    + 
+      apply ST_AppAbs. constructor.
+    + eapply multi_tran.
+      * 
+        apply ST_MultConst.
+      * 
+        apply multi_refl.
+Qed.
 
 (* Typový systém *)
 Definition total_map (A : Type) := string -> A.
@@ -242,23 +332,122 @@ Inductive has_type : context -> tm -> ty -> Prop :=
       <{ Gamma |-- t1 t2 \in T1 }>
 
 (** DOPLNIT *)
+  | T_Const : forall Gamma (n : nat),
+    <{ Gamma |-- $(n) \in Nat }>
+
+  | T_Succ : forall Gamma t1,
+      <{ Gamma |-- t1 \in Nat }> ->
+      <{ Gamma |-- succ t1 \in Nat }>
+
+  | T_Pred : forall Gamma t1,
+      <{ Gamma |-- t1 \in Nat }> ->
+      <{ Gamma |-- pred t1 \in Nat }>
+
+  | T_Mult : forall Gamma t1 t2,
+      <{ Gamma |-- t1 \in Nat }> ->
+      <{ Gamma |-- t2 \in Nat }> ->
+      <{ Gamma |-- t1 * t2 \in Nat }>
+
+  | T_If0 : forall Gamma t1 t2 t3 T,
+      <{ Gamma |-- t1 \in Nat }> ->
+      <{ Gamma |-- t2 \in T }> ->
+      <{ Gamma |-- t3 \in T }> ->
+      <{ Gamma |-- if0 t1 then t2 else t3 \in T }>
 
 where "<{ Gamma '|--' t '\in' T }>" := 
   (has_type Gamma t T) : stlc_scope.
 
 Hint Constructors has_type : core.
-Hint Constructors has_type : core.
+
 
 (* Príklad *)
 Example Nat_typing_example :
    <{ empty |-- ( \x: Nat, \y: Nat, x * y ) $(3) $(2) \in Nat }>.
 Proof.
- Admitted.
+  eapply T_App.
+  - 
+    eapply T_App.
+    + 
+      apply T_Abs.
+      apply T_Abs.
+      apply T_Mult.
+      * 
+        apply T_Var.
+        unfold update, t_update, x, y; simpl. reflexivity.
+      * 
+        apply T_Var.
+        unfold update, t_update, x, y; simpl. reflexivity.
+    +  
+      apply T_Const.
+  -  
+    apply T_Const.
+Qed.
 
 
 
 (* ================================================================= *)
 (** ** Vety *)
+
+(* ================================================================= *)
+
+Lemma t_update_eq : forall (A : Type) (m : total_map A) x v,
+  (x !-> v ; m) x = v.
+Proof.
+ intros A m x v. unfold t_update.
+  destruct (String.eqb x x) eqn:E; [reflexivity|].
+  (* druhá vetva je nemožná: x <> x *)
+  apply String.eqb_neq in E; congruence.
+Qed.
+(** [] *)
+
+Theorem t_update_neq : forall (A : Type) (m : total_map A) x1 x2 v,
+  x1 <> x2 ->
+  (x1 !-> v ; m) x2 = m x2.
+Proof.
+  intros A m x1 x2 v Hneq.
+  unfold t_update.
+  destruct (String.eqb x1 x2) eqn:E.
+  - apply String.eqb_eq in E; contradiction.
+  - reflexivity.
+Qed.
+
+
+Lemma update_eq : forall (A : Type) (m : partial_map A) x v,
+  (x |-> v ; m) x = Some v.
+Proof.
+  intros. unfold update. rewrite t_update_eq.
+  reflexivity.
+Qed.
+
+Theorem update_neq : forall (A : Type) (m : partial_map A) x1 x2 v,
+  x2 <> x1 ->
+  (x2 |-> v ; m) x1 = m x1.
+Proof.
+  intros A m x1 x2 v H.
+  unfold update. rewrite t_update_neq.
+  - reflexivity.
+  - apply H.
+Qed.
+
+Lemma includedin_update : forall (A : Type) (m m' : partial_map A)
+                                 (x : string) (vx : A),
+  includedin m m' ->
+  includedin (x |-> vx ; m) (x |-> vx ; m').
+Proof.
+  unfold includedin.
+  intros A m m' x vx H.
+  intros y vy.
+  destruct (eqb_spec x y) as [Hxy | Hxy].
+  - rewrite Hxy.
+    rewrite update_eq. rewrite update_eq. intro H1. apply H1.
+  - rewrite update_neq.
+    + rewrite update_neq.
+      * apply H.
+      * apply Hxy.
+    + apply Hxy.
+Qed.
+(* ================================================================= *)
+
 
 (** ----------------------------------------------- **)
 (** Úloha 5 ★ Dokážte nasledujúcu vetu. *)
@@ -268,13 +457,113 @@ Lemma weakening : forall Gamma Gamma' t T,
      <{ Gamma  |-- t \in T }> ->
      <{ Gamma' |-- t \in T }>.
 Proof. 
- Admitted.
+  intros Gamma Gamma' t T H Ht.
+  generalize dependent Gamma'.
+  induction Ht; eauto using includedin_update.
+Qed.
 
 
 
 
 (** ----------------------------------------------- **)
 (** Úloha 6 ★ Dokážte nasledujúcu vetu. *)
+
+(* ================================================================= *)
+
+From Coq Require Import Logic.FunctionalExtensionality.
+Lemma t_update_shadow : forall (A : Type) (m : total_map A) x v1 v2,
+  (x !-> v2 ; x !-> v1 ; m) = (x !-> v2 ; m).
+Proof.
+ intros A m x v1 v2.
+  unfold t_update.
+  apply functional_extensionality; intro x'.
+
+  destruct (String.eqb x x') eqn:E; reflexivity.
+Qed.
+
+Lemma includedin_empty : forall (A:Type) (m: partial_map A),
+  includedin (@empty A) m.
+Proof.
+  unfold includedin; intros A m x v H.
+  unfold empty in H. simpl in H. discriminate.
+Qed.
+
+Lemma weakening_empty : forall Gamma t T,
+     <{ empty |-- t \in T }> ->
+     <{ Gamma |-- t \in T }>.
+Proof.
+  intros Gamma t T Ht.
+  eapply weakening; [apply includedin_empty | exact Ht].
+Qed.
+
+Lemma update_shadow : forall (A : Type) (m : partial_map A) x v1 v2,
+  (x |-> v2 ; x |-> v1 ; m) = (x |-> v2 ; m).
+Proof.
+  intros A m x v1 v2. unfold update. rewrite t_update_shadow.
+  reflexivity.
+Qed.
+
+Theorem t_update_permute : forall (A : Type) (m : total_map A)
+                                  v1 v2 x1 x2,
+  x2 <> x1 ->
+  (x1 !-> v1 ; x2 !-> v2 ; m)
+  =
+  (x2 !-> v2 ; x1 !-> v1 ; m).
+Proof.
+  intros A m v1 v2 x1 x2 Hneq.
+  apply functional_extensionality; intro x.
+  unfold t_update.
+  destruct (String.eqb x1 x) eqn:E1;
+  destruct (String.eqb x2 x) eqn:E2; simpl; try reflexivity.
+  apply String.eqb_eq in E1.
+  apply String.eqb_eq in E2.
+  exfalso.
+  apply Hneq.
+  rewrite E2. symmetry. exact E1.
+Qed.
+
+Theorem update_permute : forall (A : Type) (m : partial_map A)
+                                x1 x2 v1 v2,
+  x2 <> x1 ->
+  (x1 |-> v1 ; x2 |-> v2 ; m) = (x2 |-> v2 ; x1 |-> v1 ; m).
+Proof.
+  intros A m x1 x2 v1 v2. unfold update.
+  apply t_update_permute.
+Qed.
+
+
+
+Lemma substitution_preserves_typing : forall Gamma x U t v T,
+  <{ x |-> U ; Gamma |-- t \in T }> ->
+  <{ empty |-- v \in U }>  ->
+  <{ Gamma |-- [x:=v]t \in T }>.
+Proof.
+  intros Gamma x U t v T Ht Hv.
+  generalize dependent Gamma. generalize dependent T.
+  induction t; intros T Gamma H;
+  (* v každom poddôkaze potrebujeme inverziu H *)
+    inversion H; clear H; subst; simpl; eauto.
+  - (* var *)
+    rename s into y. destruct (eqb_spec x y); subst. 
+    + (* x=y *)
+      rewrite update_eq in H2.
+      injection H2 as H2; subst.
+      apply weakening_empty. assumption.
+    + (* x<>y *)
+      apply T_Var. rewrite update_neq in H2. 
+      -- auto. 
+      -- auto. 
+  - (* abs *)
+    rename s into y, t into S.
+    destruct (eqb_spec x y); subst; apply T_Abs.
+    + (* x=y *)
+      rewrite update_shadow in H5. assumption.
+    + (* x<>y *)
+      apply IHt.
+      rewrite update_permute; auto.
+Qed.
+
+(* ================================================================= *)
 
 (* Zachovanie typu (Preservation) *)
 (* Nápoveda: Bude potrebné definovať a dokázať tie isté pomocné vety, 
@@ -284,19 +573,116 @@ Theorem preservation : forall t t' T,
   t --> t'  ->
   <{ empty |-- t' \in T }>.
 Proof with eauto. 
-Admitted.
+  intros t t' T HT. generalize dependent t'.
+  remember empty as Gamma.
+  induction HT;
+       intros t' HE; subst;
+       try solve [inversion HE; subst; auto].
+  - (* T_App *)
+    inversion HE; subst...
+    (* Väčšina prípadov nasleduje priamo z indukcie,
+      a [eauto] ich automaticky vyrieši. *)
+    + (* ST_AppAbs *)
+      apply substitution_preserves_typing with T2. 
+      -- inversion HT1. subst. apply H1.
+      -- assumption. 
+Qed.
 
 
 
 (** ----------------------------------------------- **)
 (** Úloha 7 ★ Dokážte nasledujúcu vetu. *)
+(* ================================================================= *)
 
+Lemma canonical_forms_fun : forall t T1 T2,
+  <{ empty |-- t \in T1 -> T2 }> ->
+  value t ->
+  exists x u, t = <{\x:T1, u}>.
+Proof.
+  intros t T1 T2 HT Hv.
+  inversion Hv; subst.
+  - 
+    inversion HT; subst. eauto.
+  - 
+    inversion HT.
+Qed.
+
+Lemma canonical_forms_nat : forall t,
+  <{ empty |-- t \in Nat }> ->
+  value t ->
+  exists n, t = tm_const n.
+Proof.
+  intros t HT Hv.
+  inversion Hv; subst.
+  
+  - (* v_abs *) inversion HT.
+  - (* v_const *) eauto.
+Qed.
+
+Lemma ST_Succ_on_value_const : forall v n,
+  value v ->
+  v = tm_const n ->
+  <{ succ v }> --> (S n).
+Proof.
+  intros v n Hv Heq. subst. apply ST_SuccConst.
+Qed.
+
+(* ================================================================= *)
 (* Progress *)
 Theorem progress : forall t T,
   <{ empty |-- t \in T }> ->
   value t \/ exists t', t --> t'.
 Proof with eauto.  
-Admitted.
+ intros t T HT.
+  remember empty as Gamma.
+  induction HT; subst Gamma; auto.
+  - (* T_Var *) discriminate H.
+
+  - (* T_App *)
+    right.
+    destruct IHHT1 as [Hv1 | [t1' Hs1]]; eauto.
+    + destruct IHHT2 as [Hv2 | [t2' Hs2]]; eauto.
+      * (* both values: function must be an abstraction *)
+        destruct (canonical_forms_fun t1 T2 T1 HT1 Hv1) as [x [u Heq]].
+        subst. exists <{ [x:=t2] u }>. apply ST_AppAbs. exact Hv2.
+(*       * exists <{ t1 t2' }>. apply ST_App2; assumption.
+    + exists <{ t1' t2 }>. apply ST_App1; assumption. *)
+
+  - (* T_Succ *)
+    right.
+    destruct IHHT as [Hv | [t' Hs]]; eauto.
+    + destruct (canonical_forms_nat t1 HT Hv) as [n0 ->].
+      exists (tm_const (S n0)). 
+      apply ST_SuccConst.
+
+
+  - (* T_Pred *)
+    destruct IHHT as [Hv | [t' Hs]]; eauto.
+    + right.
+      destruct (canonical_forms_nat t1 HT Hv) as [n ->].
+      destruct n as [| n'].
+      * exists 0. apply ST_PredZero.
+      * exists n'. apply ST_PredSucc.
+    
+
+  - (* T_Mult *)
+    right.
+    destruct IHHT1 as [Hv1 | [t1' Hs1]]; eauto.
+    + destruct IHHT2 as [Hv2 | [t2' Hs2]]; eauto.
+      * destruct (canonical_forms_nat t1 HT1 Hv1) as [n ->].
+        destruct (canonical_forms_nat t2 HT2 Hv2) as [m ->].
+        exists (n * m). apply ST_MultConst.
+
+
+  - (* T_If0 *)
+    right.
+    destruct IHHT1 as [Hv1 | [t1' Hs1]]; eauto.
+    + destruct (canonical_forms_nat t1 HT1 Hv1) as [n ->].
+      destruct n as [| n'].
+      * exists t2. apply ST_If0Zero.
+      * exists t3. apply ST_If0Succ.
+
+Qed.
 
 
 End STLCArith.
