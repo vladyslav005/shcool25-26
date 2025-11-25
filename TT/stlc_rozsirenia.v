@@ -1,0 +1,1457 @@
+From Stdlib Require Import Arith.
+From Stdlib Require Import Bool.
+From Stdlib Require Export Strings.String.
+From Stdlib Require Import FunctionalExtensionality.
+Require Import String.
+Open Scope string_scope.
+Set Warnings "-notation-overridden,-parsing,-deprecated-hint-without-locality".
+From Stdlib Require Import Strings.String.
+Set Default Goal Selector "!".
+Module STLCExtended.
+
+(** V nasledujúcich dôkazoch dochádza k opakovaniu. Každé použitie
+    [inversion Hy2] generuje tri podprípady, pričom relevantný
+    je iba ten, ktorý zodpovedá aktuálnemu prípadu v indukcii
+    podľa [Hy1]. Ostatné dva podprípady sa riešia nájdením
+    kontradikcie medzi premisami a vykonaním inverzie.
+
+    Vlastná taktika [solve_by_inverts] môže byť v takýchto
+    situáciách veľmi užitočná: automaticky vyrieši cieľ,
+    ak sa dá vyriešiť inverziou niektorej premisy, inak zlyhá. *)
+
+
+Ltac solve_by_inverts n :=
+match goal with | H : ?T |- _ =>
+  match type of T with Prop =>
+    solve [
+      inversion H;
+      match n with S (S (?n')) => subst; solve_by_inverts (S n') end ]
+  end 
+end.
+
+(** Presné detaily fungovania nie sú teraz dôležité, ale ukazuje
+    to silu jazyka [Ltac] v Rocq pri definovaní
+    špeciálnych taktík. Taktika prehľadá aktuálny stav dôkazu
+    a hľadá premisu [H] typu [Prop], pri ktorej inverzia
+    (nasledovaná rekurzívnym volaním tej istej taktiky, ak
+    je argument [n] > 1) úplne vyrieši cieľ. Ak taká premisa
+    neexistuje, taktika zlyhá.
+
+    Zvyčajne voláme [solve_by_inverts] s argumentom [1], preto
+    definujeme [solve_by_invert] ako skratku pre tento prípad,
+    aby sa predišlo pomalému overovaniu dôkazu pri väčších
+    argumentoch. *)
+
+Ltac solve_by_invert := solve_by_inverts 1.
+
+(* ----------------------------------------------------------------- *)
+(** Syntax *)
+
+Inductive ty : Type :=
+  | Ty_Arrow : ty -> ty -> ty
+  | Ty_Nat  : ty
+  | Ty_Sum  : ty -> ty -> ty
+  | Ty_List : ty -> ty
+  | Ty_Unit : ty
+  | Ty_Prod : ty -> ty -> ty.
+
+Inductive tm : Type :=
+  (* čistý STLC *)
+  | tm_var : string -> tm
+  | tm_app : tm -> tm -> tm
+  | tm_abs : string -> ty -> tm -> tm
+  (* čísla *)
+  | tm_const: nat -> tm
+  | tm_succ : tm -> tm
+  | tm_pred : tm -> tm
+  | tm_mult : tm -> tm -> tm
+  | tm_if0  : tm -> tm -> tm -> tm
+  (* sumy *)
+  | tm_inl : ty -> tm -> tm
+  | tm_inr : ty -> tm -> tm
+  | tm_case : tm -> string -> tm -> string -> tm -> tm
+          (* napr., [case t0 of inl x1 => t1 | inr x2 => t2] *)
+  (* zoznamy *)
+  | tm_nil : ty -> tm
+  | tm_cons : tm -> tm -> tm
+  | tm_lcase : tm -> tm -> string -> string -> tm -> tm
+           (* i.e., [case t1 of | nil => t2 | x::y => t3] *)
+  (* unit *)
+  | tm_unit : tm
+
+  (*  Budete pracovať na nasledujúcich rozšíreniach jazyka STLC: *)
+
+  (* dvojica *)
+  | tm_pair : tm -> tm -> tm
+  | tm_fst : tm -> tm
+  | tm_snd : tm -> tm
+  (* let väzba*)
+  | tm_let : string -> tm -> tm -> tm
+         (* napr., [let x = t1 in t2] *)
+  (* operátor fix *)
+  | tm_fix  : tm -> tm.
+
+
+Definition w : string := "w".
+Definition x : string := "x".
+Definition y : string := "y".
+Definition z : string := "z".
+
+Hint Unfold x : core.
+Hint Unfold y : core.
+Hint Unfold z : core.
+
+(** Notácia pre konkrétnu syntax: *)
+Declare Scope stlc_scope.
+Delimit Scope stlc_scope with stlc.
+Open Scope stlc_scope.
+Declare Custom Entry stlc_ty.
+Declare Custom Entry stlc_tm.
+
+Notation "x" := x (in custom stlc_ty at level 0, x global) : stlc_scope.
+
+Notation "<{{ x }}>" := x (x custom stlc_ty).
+
+Notation "( t )" := t (in custom stlc_ty at level 0, t custom stlc_ty) : stlc_scope.
+Notation "S -> T" := (Ty_Arrow S T) (in custom stlc_ty at level 99, right associativity) : stlc_scope.
+
+Notation "$( t )" := t (in custom stlc_ty at level 0, t constr) : stlc_scope.
+
+Notation "$( x )" := x (in custom stlc_tm at level 0, x constr, only parsing) : stlc_scope.
+Notation "x" := x (in custom stlc_tm at level 0, x constr at level 0) : stlc_scope.
+Notation "<{ e }>" := e (e custom stlc_tm at level 200) : stlc_scope.
+Notation "( x )" := x (in custom stlc_tm at level 0, x custom stlc_tm) : stlc_scope.
+
+Notation "x y" := (tm_app x y) (in custom stlc_tm at level 10, left associativity) : stlc_scope.
+Notation "\ x : t , y" :=
+  (tm_abs x t y) (in custom stlc_tm at level 200, x global,
+                     t custom stlc_ty,
+                     y custom stlc_tm at level 200,
+                     left associativity).
+Coercion tm_var : string >-> tm.
+Arguments tm_var _%_string.
+
+Notation "'Nat'" := Ty_Nat (in custom stlc_ty at level 0).
+Notation "'succ' x" := (tm_succ x) (in custom stlc_tm at level 10,
+                                     x custom stlc_tm at level 0) : stlc_scope.
+Notation "'pred' x" := (tm_pred x) (in custom stlc_tm at level 10,
+                                     x custom stlc_tm at level 0) : stlc_scope.
+Notation "x * y" := (tm_mult x y) (in custom stlc_tm at level 95,
+                                      right associativity) : stlc_scope.
+Notation "'if0' x 'then' y 'else' z" :=
+  (tm_if0 x y z) (in custom stlc_tm at level 0,
+                    x custom stlc_tm at level 0,
+                    y custom stlc_tm at level 0,
+                    z custom stlc_tm at level 0) : stlc_scope.
+
+Coercion tm_const : nat >-> tm.
+
+Notation "S + T" :=
+  (Ty_Sum S T) (in custom stlc_ty at level 3, left associativity).
+Notation "'inl' T t" := (tm_inl T t) (in custom stlc_tm at level 10,
+                                         T custom stlc_ty,
+                                         t custom stlc_tm at level 0).
+Notation "'inr' T t" := (tm_inr T t) (in custom stlc_tm at level 10,
+                                         T custom stlc_ty,
+                                         t custom stlc_tm at level 0).
+Notation "'case' t0 'of' '|' 'inl' x1 '=>' t1 '|' 'inr' x2 '=>' t2" :=
+  (tm_case t0 x1 t1 x2 t2) (in custom stlc_tm at level 200,
+                               t0 custom stlc_tm at level 200,
+                               x1 global,
+                               t1 custom stlc_tm at level 200,
+                               x2 global,
+                               t2 custom stlc_tm at level 200,
+                               left associativity).
+
+Notation "X * Y" :=
+  (Ty_Prod X Y) (in custom stlc_ty at level 2, X custom stlc_ty, Y custom stlc_ty at level 0) : stlc_scope.
+
+Notation "( x ',' y )" := (tm_pair x y) (in custom stlc_tm at level 0,
+                                                x custom stlc_tm,
+                                                y custom stlc_tm) : stlc_scope.
+Notation "t '.fst'" := (tm_fst t) (in custom stlc_tm at level 1) : stlc_scope.
+Notation "t '.snd'" := (tm_snd t) (in custom stlc_tm at level 1) : stlc_scope.
+
+Notation "'List' T" :=
+  (Ty_List T) (in custom stlc_ty at level 4) : stlc_scope.
+Notation "'List' T" := (Ty_List T) (at level 0) : stlc_scope.
+Notation "'nil' T" := (tm_nil T) (in custom stlc_tm at level 0, T custom stlc_ty) : stlc_scope.
+Notation "h '::' t" := (tm_cons h t) (in custom stlc_tm at level 2, right associativity) : stlc_scope.
+Notation "'case' t1 'of' '|' 'nil' '=>' t2 '|' x '::' y '=>' t3" :=
+  (tm_lcase t1 t2 x y t3) (in custom stlc_tm at level 200,
+                              t1 custom stlc_tm at level 200,
+                              t2 custom stlc_tm at level 0,
+                              x global,
+                              y global,
+                              t3 custom stlc_tm at level 0,
+                              left associativity) : stlc_scope.
+
+Notation "'Unit'" :=
+  (Ty_Unit) (in custom stlc_ty at level 0) : stlc_scope.
+Notation "'unit'" := tm_unit (in custom stlc_tm at level 0) : stlc_scope.
+
+Notation "'let' x '=' t1 'in' t2" :=
+  (tm_let x t1 t2) (in custom stlc_tm at level 200) : stlc_scope.
+
+Notation "'fix' t" := (tm_fix t) (in custom stlc_tm at level 200) : stlc_scope.
+
+
+(* ----------------------------------------------------------------- *)
+(** Substitúcia *)
+
+Reserved Notation "'[' x ':=' s ']' t" (in custom stlc_tm at level 5, x global, s custom stlc_tm,
+      t custom stlc_tm at next level, right associativity).
+
+(** ----------------------------------------------- **)
+(** Úloha 1 ★ Doplnte definíciu substitúcie. *)
+
+Fixpoint subst (x : string) (s : tm) (t : tm) : tm :=
+  match t with
+  (* čistý STLC *)
+  | tm_var y =>
+      if String.eqb x y then s else t
+  | <{\y:T, t1}> =>
+      if String.eqb x y then t else <{\y:T, [x:=s] t1}>
+  | <{t1 t2}> =>
+      <{([x:=s] t1) ([x:=s] t2)}>
+  (* čísla *)
+  | tm_const _ =>
+      t
+  | <{succ t1}> =>
+      <{succ ([x := s] t1)}>
+  | <{pred t1}> =>
+      <{pred ([x := s] t1)}>
+  | <{t1 * t2}> =>
+      <{ ([x := s] t1) * ([x := s] t2)}>
+  | <{if0 t1 then t2 else t3}> =>
+      <{if0 [x := s] t1 then [x := s] t2 else [x := s] t3}>
+  (* sumy *)
+  | <{inl T2 t1}> =>
+      <{inl T2 ( [x:=s] t1) }>
+  | <{inr T1 t2}> =>
+      <{inr T1 ( [x:=s] t2) }>
+  | <{case t0 of | inl y1 => t1 | inr y2 => t2}> =>
+      <{case ([x:=s] t0) of
+         | inl y1 => $(if String.eqb x y1 then t1 else <{ [x:=s] t1 }> )
+         | inr y2 => $(if String.eqb x y2 then t2 else <{ [x:=s] t2 }> ) }>
+  (* zoznamy *)
+  | <{nil T}> =>
+      t
+  | <{t1 :: t2}> =>
+      <{ ([x:=s] t1) :: [x:=s] t2 }>
+  | <{case t1 of | nil => t2 | y1 :: y2 => t3}> =>
+      <{case ( [x:=s] t1 ) of
+        | nil => [x:=s] t2
+        | y1 :: y2 =>
+        $(if String.eqb x y1 then
+           t3
+         else if String.eqb x y2 then t3
+              else <{ [x:=s] t3 }>) }>
+  (* unit *)
+  | <{unit}> => <{unit}>
+
+  (* Doplnte nasledujúce prípady: *)
+  
+  (* Dvojica *)
+
+  | <{(t1, t2)}> =>
+      <{( [x := s] t1 , [x := s] t2 )}>
+  | <{t1.fst}> =>
+      <{ ([x := s] t1).fst }>
+  | <{t1.snd}> =>
+      <{ ([x := s] t1).snd }>
+
+  (* let väzba *)
+  | <{let y = t1 in t2}> =>
+      <{let y = [x := s] t1 in
+          $(if String.eqb x y then
+              t2
+            else
+              <{ [x := s] t2 }>) }>
+
+  (* operátor fix *)
+  | <{fix t1}> =>
+      <{fix [x := s] t1}>
+
+(*   | _ => t  (* ... zmažte tento riadok po dokončení ulohy *) *)
+ end
+
+where "'[' x ':=' s ']' t" := (subst x s t) (in custom stlc_tm) : stlc_scope.
+
+
+(* ----------------------------------------------------------------- *)
+(** *** Redukcia *)
+
+(** Hodnoty: *)
+
+Inductive value : tm -> Prop :=
+  (* Lambda abstrakcia: *)
+  | v_abs : forall x T2 t1,
+      value <{\x:T2, t1}>
+  (* Čísla: *)
+  | v_nat : forall n : nat,
+      value <{n}>
+  (* injekcie s hodnotou  *)
+  | v_inl : forall v T1,
+      value v ->
+      value <{inl T1 v}>
+  | v_inr : forall v T1,
+      value v ->
+      value <{inr T1 v}>
+  (* Zoznam ak všetky elementy sú hodnoty *)
+  | v_lnil : forall T1, value <{nil T1}>
+  | v_lcons : forall v1 v2,
+      value v1 ->
+      value v2 ->
+      value <{v1 :: v2}>
+  (* unit je vždy hodnota *)
+  | v_unit : value <{unit}>
+  (* dvojica je hodnota ak oba prvky sú hodnoty: *)
+  | v_pair : forall v1 v2,
+      value v1 ->
+      value v2 ->
+      value <{(v1, v2)}>.
+
+Hint Constructors value : core.
+
+Reserved Notation "t '-->' t'" (at level 40).
+
+(** ----------------------------------------------- **)
+(** Úloha 2 ★ Doplnte definíciu sémantiky malých krokov. *)
+
+Inductive step : tm -> tm -> Prop :=
+  | ST_AppAbs : forall x T2 t1 v2,
+         value v2 ->
+         <{(\x:T2, t1) v2}> --> <{ [x:=v2]t1 }>
+  | ST_App1 : forall t1 t1' t2,
+         t1 --> t1' ->
+         <{t1 t2}> --> <{t1' t2}>
+  | ST_App2 : forall v1 t2 t2',
+         value v1 ->
+         t2 --> t2' ->
+         <{v1 t2}> --> <{v1  t2'}>
+  | ST_Succ : forall t1 t1',
+         t1 --> t1' ->
+         <{succ t1}> --> <{succ t1'}>
+  | ST_SuccNat : forall n : nat,
+         <{succ n}> --> <{ $(S n) }>
+  | ST_Pred : forall t1 t1',
+         t1 --> t1' ->
+         <{pred t1}> --> <{pred t1'}>
+  | ST_PredNat : forall n:nat,
+         <{pred n}> --> <{ $(n - 1) }>
+  | ST_Mulconsts : forall n1 n2 : nat,
+         <{n1 * n2}> --> <{ $(n1 * n2) }>
+  | ST_Mult1 : forall t1 t1' t2,
+         t1 --> t1' ->
+         <{t1 * t2}> --> <{t1' * t2}>
+  | ST_Mult2 : forall v1 t2 t2',
+         value v1 ->
+         t2 --> t2' ->
+         <{v1 * t2}> --> <{v1 * t2'}>
+  | ST_If0 : forall t1 t1' t2 t3,
+         t1 --> t1' ->
+         <{if0 t1 then t2 else t3}> --> <{if0 t1' then t2 else t3}>
+  | ST_If0_Zero : forall t2 t3,
+         <{if0 0 then t2 else t3}> --> t2
+  | ST_If0_Nonzero : forall n t2 t3,
+         <{if0 $(S n) then t2 else t3}> --> t3
+  | ST_Inl : forall t1 t1' T2,
+        t1 --> t1' ->
+        <{inl T2 t1}> --> <{inl T2 t1'}>
+  | ST_Inr : forall t2 t2' T1,
+        t2 --> t2' ->
+        <{inr T1 t2}> --> <{inr T1 t2'}>
+  | ST_Case : forall t0 t0' x1 t1 x2 t2,
+        t0 --> t0' ->
+        <{case t0 of | inl x1 => t1 | inr x2 => t2}> -->
+        <{case t0' of | inl x1 => t1 | inr x2 => t2}>
+  | ST_CaseInl : forall v0 x1 t1 x2 t2 T2,
+        value v0 ->
+        <{case inl T2 v0 of | inl x1 => t1 | inr x2 => t2}> --> <{ [x1:=v0]t1 }>
+  | ST_CaseInr : forall v0 x1 t1 x2 t2 T1,
+        value v0 ->
+        <{case inr T1 v0 of | inl x1 => t1 | inr x2 => t2}> --> <{ [x2:=v0]t2 }>
+  | ST_Cons1 : forall t1 t1' t2,
+       t1 --> t1' ->
+       <{t1 :: t2}> --> <{t1' :: t2}>
+  | ST_Cons2 : forall v1 t2 t2',
+       value v1 ->
+       t2 --> t2' ->
+       <{v1 :: t2}> --> <{v1 :: t2'}>
+  | ST_Lcase1 : forall t1 t1' t2 x1 x2 t3,
+       t1 --> t1' ->
+       <{case t1 of | nil => t2 | x1 :: x2 => t3}> -->
+       <{case t1' of | nil => t2 | x1 :: x2 => t3}>
+  | ST_LcaseNil : forall T1 t2 x1 x2 t3,
+       <{case nil T1 of | nil => t2 | x1 :: x2 => t3}> --> t2
+  | ST_LcaseCons : forall v1 vl t2 x1 x2 t3,
+       value v1 ->
+       value vl ->
+       <{case v1 :: vl of | nil => t2 | x1 :: x2 => t3}>
+         -->  <{ [x2 := vl] ([x1 := v1] t3) }>
+
+  (* Pridajte pravidlá pre nasledujúce rozšírenia: *)
+  
+  (* Dvojica *)
+  | ST_Pair1 : forall t1 t1' t2,
+      t1 --> t1' ->
+      <{(t1, t2)}> --> <{(t1', t2)}>
+  | ST_Pair2 : forall v1 t2 t2',
+      value v1 ->
+      t2 --> t2' ->
+      <{(v1, t2)}> --> <{(v1, t2')}>
+  | ST_Fst1 : forall t1 t1',
+      t1 --> t1' ->
+      <{t1.fst}> --> <{t1'.fst}>
+  | ST_FstPair : forall v1 v2,
+      value v1 ->
+      value v2 ->
+      <{(v1, v2).fst}> --> v1
+  | ST_Snd1 : forall t1 t1',
+      t1 --> t1' ->
+      <{t1.snd}> --> <{t1'.snd}>
+  | ST_SndPair : forall v1 v2,
+      value v1 ->
+      value v2 ->
+      <{(v1, v2).snd}> --> v2
+
+  (* let väzba *)
+  | ST_Let1 : forall x t1 t1' t2,
+      t1 --> t1' ->
+      <{let x = t1 in t2}> --> <{let x = t1' in t2}>
+  | ST_LetValue : forall x v1 t2,
+      value v1 ->
+      <{let x = v1 in t2}> --> <{ [x:=v1]t2 }>
+
+  (* operátor fix *)
+  | ST_Fix1 : forall t1 t1',
+      t1 --> t1' ->
+      <{fix t1}> --> <{fix t1'}>
+  | ST_FixAbs : forall x T t1,
+      <{fix (\x:T, t1)}> --> <{ [x:= fix (\x:T, t1)] t1 }>
+
+  where "t '-->' t'" := (step t t').
+
+
+Inductive multistep : tm -> tm -> Prop :=
+  | multi_refl : forall t, multistep t t  
+  | multi_tran : forall t1 t2 t3,
+      step t1 t2 ->  
+      multistep t2 t3 ->
+      multistep t1 t3.
+
+Notation "t1 '-->*' t2" := (multistep t1 t2) (at level 40).
+
+Hint Constructors step : core.
+
+(* ----------------------------------------------------------------- *)
+(** Typový systém *)
+
+(** Definícia kontextu *)
+Definition total_map (A : Type) := string -> A.
+
+Definition t_empty {A : Type} (v : A) : total_map A :=
+  (fun _ => v).
+
+Definition t_update {A : Type} (m : total_map A)
+                    (x : string) (v : A) :=
+  fun x' => if String.eqb x x' then v else m x'.
+
+Notation "'_' '!->' v" := (t_empty v)
+  (at level 100, right associativity).
+Notation "x '!->' v ';' m" := 
+        (t_update m x v)
+        (at level 100, x constr, right associativity).
+
+Definition partial_map (A : Type) := total_map (option A).
+
+Definition empty {A : Type} : partial_map A :=
+  t_empty None.
+
+Definition update {A : Type} (m : partial_map A)
+           (x : string) (v : A) :=
+  (x !-> Some v ; m).
+
+Notation "x '|->' v ';' m" := (update m x v)
+  (at level 0, x constr, v at level 200, right associativity).
+
+Notation "x '|->' v" := (update empty x v)
+  (at level 0, x constr, v at level 200).
+
+Definition includedin {A : Type} (m m' : partial_map A) :=
+  forall x v, m x = Some v -> m' x = Some v.
+
+Definition context := partial_map ty.
+
+Lemma t_update_eq : forall (A : Type) (m : total_map A) x v,
+  (x !-> v ; m) x = v.
+Proof.
+intros.
+unfold t_update. 
+rewrite String.eqb_refl. 
+reflexivity.
+Qed.
+
+Lemma update_eq : forall (A : Type) (m : partial_map A) x v,
+  (x |-> v ; m) x = Some v.
+Proof.
+  intros. unfold update. rewrite t_update_eq.
+  reflexivity.
+Qed.
+
+Theorem t_update_neq : forall (A : Type) (m : total_map A) x1 x2 v,
+  x1 <> x2 ->
+  (x1 !-> v ; m) x2 = m x2.
+Proof.
+intros.
+unfold t_update.
+assert (x1 =? x2 = false) as E.
+{ apply String.eqb_neq. apply H. }
+rewrite E. reflexivity.
+Qed.
+
+Theorem update_neq : forall (A : Type) (m : partial_map A) x1 x2 v,
+  x2 <> x1 ->
+  (x2 |-> v ; m) x1 = m x1.
+Proof.
+  intros A m x1 x2 v H.
+  unfold update. rewrite t_update_neq.
+  - reflexivity.
+  - apply H.
+Qed.
+
+Lemma includedin_update : forall (A : Type) (m m' : partial_map A)
+                                 (x : string) (vx : A),
+  includedin m m' ->
+  includedin (x |-> vx ; m) (x |-> vx ; m').
+Proof.
+  unfold includedin.
+  intros A m m' x vx H.
+  intros y vy.
+  destruct (eqb_spec x y) as [Hxy | Hxy].
+  - rewrite Hxy.
+    rewrite update_eq. rewrite update_eq. intro H1. apply H1.
+  - rewrite update_neq.
+    + rewrite update_neq.
+      * apply H.
+      * apply Hxy.
+    + apply Hxy.
+Qed.
+
+Lemma t_update_shadow : forall (A : Type) (m : total_map A) x v1 v2,
+  (x !-> v2 ; x !-> v1 ; m) = (x !-> v2 ; m).
+Proof.
+intros.
+apply functional_extensionality. 
+intro.
+unfold t_update. 
+destruct (String.eqb_spec x0 x1) as [H | H]; reflexivity.
+Qed.
+
+Lemma update_shadow : forall (A : Type) (m : partial_map A) x v1 v2,
+  (x |-> v2 ; x |-> v1 ; m) = (x |-> v2 ; m).
+Proof.
+  intros A m x v1 v2. unfold update. rewrite t_update_shadow.
+  reflexivity.
+Qed.
+
+Theorem t_update_permute : forall (A : Type) (m : total_map A)
+                                  v1 v2 x1 x2,
+  x2 <> x1 ->
+  (x1 !-> v1 ; x2 !-> v2 ; m)
+  =
+  (x2 !-> v2 ; x1 !-> v1 ; m).
+Proof.
+intros.
+unfold t_update. 
+apply functional_extensionality. intros.
+destruct (String.eqb_spec x1 x0) as [H1 | H2]. 
+- rewrite <- H1. subst. 
+  assert (x2 =? x0 = false) as E.
+  { apply String.eqb_neq. apply H. } rewrite E. reflexivity.
+- reflexivity. 
+Qed.
+
+Theorem update_permute : forall (A : Type) (m : partial_map A)
+                                x1 x2 v1 v2,
+  x2 <> x1 ->
+  (x1 |-> v1 ; x2 |-> v2 ; m) = (x2 |-> v2 ; x1 |-> v1 ; m).
+Proof.
+  intros A m x1 x2 v1 v2. unfold update.
+  apply t_update_permute.
+Qed.
+
+(** ----------------------------------------------- **)
+(** Úloha 3 ★ Doplnte definíciu typovej relácie. *)
+
+(* ================================================ *)
+(** ** Typová relácia *)
+
+Notation "x '|->' v ';' m " := (update m x v)
+  (in custom stlc_tm at level 0, x constr at level 0, 
+  v  custom stlc_ty, right associativity) : stlc_scope.
+
+Notation "x '|->' v " := (update empty x v)
+(in custom stlc_tm at level 0, x constr at level 0, 
+v custom stlc_ty) : stlc_scope.
+
+Notation "'empty'" := empty (in custom stlc_tm) : stlc_scope.
+
+Reserved Notation "<{ Gamma '|--' t '\in' T }>"
+(at level 0, Gamma custom stlc_tm at level 200, 
+t custom stlc_tm, T custom stlc_ty).
+
+Inductive has_type : context -> tm -> ty -> Prop :=
+  | T_Var : forall Gamma x T1,
+      Gamma x = Some T1 ->
+      <{ Gamma |-- x \in T1 }>
+  | T_Abs : forall Gamma x T1 T2 t1,
+    <{ x |-> T2 ; Gamma |-- t1 \in T1 }> ->
+    <{ Gamma |-- \x:T2, t1 \in T2 -> T1 }>
+  | T_App : forall T1 T2 Gamma t1 t2,
+      <{ Gamma |-- t1 \in T2 -> T1 }> ->
+      <{ Gamma |-- t2 \in T2 }> ->
+      <{ Gamma |-- t1 t2 \in T1 }>
+  | T_Nat : forall Gamma (n : nat),
+      <{ Gamma |-- n \in Nat }>
+  | T_Succ : forall Gamma t,
+      <{ Gamma |-- t \in Nat }> ->
+      <{ Gamma |-- succ t \in Nat }>
+  | T_Pred : forall Gamma t,
+      <{ Gamma |-- t \in Nat }> ->
+      <{ Gamma |-- pred t \in Nat }>
+  | T_Mult : forall Gamma t1 t2,
+      <{ Gamma |-- t1 \in Nat }> ->
+      <{ Gamma |-- t2 \in Nat }> ->
+      <{ Gamma |-- t1 * t2 \in Nat }>
+  | T_If0 : forall Gamma t1 t2 t3 T0,
+      <{ Gamma |-- t1 \in Nat }> ->
+      <{ Gamma |-- t2 \in T0 }> ->
+      <{ Gamma |-- t3 \in T0 }> ->
+      <{ Gamma |-- if0 t1 then t2 else t3 \in T0 }>
+  | T_Inl : forall Gamma t1 T1 T2,
+      <{ Gamma |-- t1 \in T1 }> ->
+      <{ Gamma |-- (inl T2 t1) \in T1 + T2 }>
+  | T_Inr : forall Gamma t2 T1 T2,
+      <{ Gamma |-- t2 \in T2 }> ->
+      <{ Gamma |-- (inr T1 t2) \in T1 + T2 }>
+  | T_Case : forall Gamma t0 x1 T1 t1 x2 T2 t2 T3,
+      <{ Gamma |-- t0 \in T1 + T2 }> ->
+      <{ x1 |-> T1 ; Gamma |-- t1 \in T3 }> ->
+      <{ x2 |-> T2 ; Gamma |-- t2 \in T3 }> ->
+      <{ Gamma |-- case t0 of | inl x1 => t1 | inr x2 => t2 \in T3 }>
+  | T_Nil : forall Gamma T1,
+      <{ Gamma |-- nil T1 \in List T1 }>
+  | T_Cons : forall Gamma t1 t2 T1,
+      <{ Gamma |-- t1 \in T1 }> ->
+      <{ Gamma |-- t2 \in List T1 }> ->
+      <{ Gamma |-- t1 :: t2 \in List T1 }>
+  | T_Lcase : forall Gamma t1 T1 t2 x1 x2 t3 T2,
+      <{ Gamma |-- t1 \in List T1 }> ->
+      <{ Gamma |-- t2 \in T2 }> ->
+      <{ x1 |-> T1 ; x2 |-> List T1 ; Gamma |-- t3 \in T2 }> ->
+      <{ Gamma |-- case t1 of | nil => t2 | x1 :: x2 => t3 \in T2 }>
+  | T_Unit : forall Gamma,
+      <{ Gamma |-- unit \in Unit }>
+
+  (* Pridajte pravidlá pre nasledujúce rozšírenia: *)
+
+ (* Dvojica *)
+  | T_Pair : forall Gamma t1 t2 T1 T2,
+      <{ Gamma |-- t1 \in T1 }> ->
+      <{ Gamma |-- t2 \in T2 }> ->
+      <{ Gamma |-- (t1, t2) \in T1 * T2 }>
+  | T_Fst : forall Gamma t T1 T2,
+      <{ Gamma |-- t \in T1 * T2 }> ->
+      <{ Gamma |-- t.fst \in T1 }>
+  | T_Snd : forall Gamma t T1 T2,
+      <{ Gamma |-- t \in T1 * T2 }> ->
+      <{ Gamma |-- t.snd \in T2 }>
+
+  (* let väzba *)
+  | T_Let : forall Gamma x t1 t2 T1 T2,
+      <{ Gamma |-- t1 \in T1 }> ->
+      <{ x |-> T1 ; Gamma |-- t2 \in T2 }> ->
+      <{ Gamma |-- let x = t1 in t2 \in T2 }>
+
+  (* operátor fix *)
+  | T_Fix : forall Gamma t T,
+      <{ Gamma |-- t \in T -> T }> ->
+      <{ Gamma |-- fix t \in T }>
+
+where "<{ Gamma '|--' t '\in' T }>" := (has_type Gamma t T).
+
+Hint Constructors has_type : core.
+
+
+Module Examples.
+
+(** Definícia premenných: *)
+
+Open Scope string_scope.
+Notation x := "x".
+Notation y := "y".
+Notation a := "a".
+Notation f := "f".
+Notation g := "g".
+Notation l := "l".
+Notation k := "k".
+Notation i1 := "i1".
+Notation i2 := "i2".
+Notation processSum := "processSum".
+Notation n := "n".
+Notation eq := "eq".
+Notation m := "m".
+Notation evenodd := "evenodd".
+Notation even := "even".
+Notation odd := "odd".
+Notation eo := "eo".
+
+(** Ďalej nasleduje trochu Rocq „hackovania“ na automatizáciu hľadania
+    dôkazových stromov pre typovanie.  Nemusíte úplne rozumieť
+    detailom – stačí, aby ste vedeli, čo hľadať, ak by ste niekedy 
+    potrebovali vytvárať vlastné rozšírenia pre [auto].
+
+    Nasledujúce deklarácie [Hint] hovoria, že keď [auto] narazí
+    na cieľ tvaru [(Gamma |-- (tm_app e1 e2) \in T)], má skúsiť
+    [eapply T_App], pričom zanechá existenčnú premennú pre
+    medzikrok T1, a podobne pre [lcase].  Táto premenná sa potom
+    doplní počas hľadania dôkazových stromov pre [e1] a [e2].
+    Tretí hint, definuje „tvrdšie“ hľadanie pri riešení
+    rovností. To je užitočné na automatizáciu použití [T_Var]
+    (ktoré má rovnosť ako predpodmienku).
+*)
+
+Hint Extern 2 (has_type _ (tm_app _ _) _) =>
+  eapply T_App; auto : core.
+Hint Extern 2 (has_type _ (tm_lcase _ _ _ _ _) _) =>
+  eapply T_Lcase; auto : core.
+Hint Extern 2 (_ = _) => compute; reflexivity : core.
+
+(* ----------------------------------------------------------------- *)
+(** Čísla *)
+
+Module Numtest.
+
+Definition tm_test :=
+  <{if0
+    (pred
+      (succ
+        (pred
+          (2 * 0))))
+    then 5
+    else 6}>.
+
+Example typechecks :
+  <{ empty |-- tm_test \in Nat }>.
+Proof.
+  unfold tm_test.
+  (* Tento dôkazový strom je pomerne hlboký, takže je potrebné
+     zvýšiť maximálnu hĺbku prehľadávania taktiky [auto]
+     z predvolených 5 na 10. *)
+  auto 10.
+Qed.
+
+Example reduces :
+  tm_test -->* 5.
+Proof.
+
+  unfold tm_test. 
+  eapply multi_tran. { auto 10. }
+  eapply multi_tran. { auto 10. }
+  eapply multi_tran. { auto 10. }
+  eapply multi_tran. { auto 10. }
+  eapply multi_tran. { auto 10. }
+  apply multi_refl.
+Qed.
+
+End Numtest.
+
+(* ----------------------------------------------------------------- *)
+(** *** Dvojice *)
+
+Module ProdTest.
+
+Definition tm_test :=
+  <{((5,6),7).fst.snd}>.
+
+Example typechecks :
+  <{ empty |-- tm_test \in Nat }>.
+Proof. unfold tm_test. eauto.  
+Qed.
+
+Example reduces :
+  tm_test -->* 6.
+Proof.
+
+  unfold tm_test.
+  eapply multi_tran. { auto 10. }
+  eapply multi_tran. { auto 10. }
+  apply multi_refl.
+Qed.
+
+End ProdTest.
+
+(* ----------------------------------------------------------------- *)
+(** *** [let väzba] *)
+
+Module LetTest.
+
+Definition tm_test :=
+  <{let x = (pred 6) in
+    (succ x)}>.
+
+Example typechecks :
+  <{ empty |-- tm_test \in Nat }>.
+Proof. 
+  unfold tm_test. eauto.
+Qed.
+
+Example reduces :
+  tm_test -->* 6.
+Proof.
+  unfold tm_test.
+  eapply multi_tran.
+  - apply ST_Let1.
+    apply ST_PredNat.
+  - eapply multi_tran.
+    + apply ST_LetValue.
+      constructor.
+    + eapply multi_tran.
+      * apply ST_SuccNat.
+      * apply multi_refl.
+Qed.
+
+End LetTest.
+
+Module LetTest1.
+
+Definition tm_test :=
+  <{ let z = pred 6 in
+     (succ z) }>.
+
+Example typechecks :
+  <{ empty |-- tm_test \in Nat }>.
+Proof. unfold tm_test. eauto.
+Qed.
+
+Example reduces :
+  tm_test -->* 6.
+Proof.
+  unfold tm_test.
+  eapply multi_tran.
+  - apply ST_Let1.
+    apply ST_PredNat.
+
+  - eapply multi_tran.
+    + apply ST_LetValue.
+      constructor.
+
+    + eapply multi_tran.
+      * apply ST_SuccNat.
+      * apply multi_refl.
+Qed.
+
+End LetTest1.
+
+(* ----------------------------------------------------------------- *)
+(** *** Sumy *)
+
+Module Sumtest1.
+
+Definition tm_test :=
+  <{ case (inl Nat 5) of
+     | inl x => x
+     | inr y => y }>.
+
+Example typechecks :
+  <{ empty |-- tm_test \in Nat }>.
+Proof. unfold tm_test. eauto. 
+Qed.
+
+Example reduces :
+  tm_test -->* 5.
+Proof.
+
+  unfold tm_test.
+  eapply multi_tran.
+  - apply ST_CaseInl.
+    constructor.
+  - simpl.
+    apply multi_refl.
+Qed.
+
+End Sumtest1.
+
+Module Sumtest2.
+
+Definition tm_test :=
+  <{ let processSum =
+     (\x:Nat + Nat,
+       case x of
+        | inl n => n
+        | inr n => (if0 n then 1 else 0)) in
+     (processSum (inl Nat 5), processSum (inr Nat 5)) }>.
+
+Example typechecks :
+  <{ empty |-- tm_test \in Nat * Nat }>.
+Proof. unfold tm_test. eauto 10. 
+Qed.
+
+Example reduces :
+  tm_test -->* <{ (5, 0) }>.
+Proof.
+  unfold tm_test.
+  eapply multi_tran.
+  - apply ST_LetValue. constructor.
+  - simpl.
+    eapply multi_tran.
+    + apply ST_Pair1.
+      apply ST_AppAbs. constructor. constructor.
+    + simpl.
+      eapply multi_tran.
+      * apply ST_Pair1.
+        apply ST_CaseInl. constructor.
+      * simpl.
+        eapply multi_tran.
+        -- apply ST_Pair2. ++ eauto. ++ constructor. eauto.
+           (* apply ST_AppAbs. constructor. constructor. *)
+        -- simpl.
+           eapply multi_tran.
+           ++ apply ST_Pair2. 
+              ** eauto. 
+              ** apply ST_CaseInr.
+                 eauto.
+           ++ simpl.
+              eapply multi_tran.
+              ** apply ST_Pair2. 
+                 --- eauto.
+                 --- apply ST_If0_Nonzero.
+              ** simpl.
+                 apply multi_refl.
+Qed.
+
+End Sumtest2.
+
+(* ----------------------------------------------------------------- *)
+(** *** Zoznamy *)
+
+Module ListTest.
+
+Definition tm_test :=
+  <{ let l = (5 :: 6 :: (nil Nat)) in
+     case l of
+     | nil => 0
+     | x :: y => (x * x) }>.
+
+Example typechecks :
+  <{ empty |-- tm_test \in Nat }>.
+Proof. unfold tm_test. eauto.
+Qed.
+
+Example reduces :
+  tm_test -->* 25.
+Proof.
+  unfold tm_test.
+  eapply multi_tran.
+  - apply ST_LetValue. repeat constructor.
+  - simpl.
+    eapply multi_tran.
+    + apply ST_LcaseCons. 
+      ++ eauto. 
+      ++ constructor. 
+         +++ eauto. 
+         +++ repeat constructor. 
+    + simpl.
+      eapply multi_tran.
+      * apply ST_Mulconsts.
+      * simpl. apply multi_refl.
+Qed.
+
+End ListTest.
+
+(* ----------------------------------------------------------------- *)
+(** *** [fix] *)
+
+Module FixTest1.
+
+Definition fact :=
+  <{ fix
+      (\f:Nat->Nat,
+        \a:Nat,
+         if0 a then 1 else (a * (f (pred a)))) }>.
+
+Example typechecks :
+  <{ empty |-- fact \in Nat -> Nat }>.
+Proof. unfold fact. auto 10.
+Qed.
+
+Example reduces :
+  <{ fact 4 }> -->* 24.
+Proof.
+  
+Admitted.
+
+End FixTest1.
+
+Module FixTest2.
+
+Definition map :=
+  <{ \g:Nat->Nat,
+       fix
+         (\f:(List Nat)->(List Nat),
+            \l:List Nat,
+               case l of
+               | nil => nil Nat
+               | x::l => ((g x)::(f l))) }>.
+
+Example typechecks :
+  <{ empty |-- map \in
+     (Nat -> Nat) -> (List Nat) -> (List Nat) }>.
+Proof. unfold map. auto 10.
+Qed.
+
+Example reduces :
+  <{ map (\a:Nat, succ a) (1 :: 2 :: (nil Nat)) }>
+  -->* <{ 2 :: 3 :: (nil Nat) }>.
+Proof.
+
+Admitted.
+
+End FixTest2.
+
+Module FixTest3.
+
+Definition equal :=
+  <{ fix
+        (\eq:Nat->Nat->Nat,
+           \m:Nat, \n:Nat,
+             if0 m then (if0 n then 1 else 0)
+             else (if0 n
+                   then 0
+                   else (eq (pred m) (pred n)))) }>.
+
+Example typechecks :
+ <{ empty |-- equal \in Nat -> Nat -> Nat }>.
+Proof. unfold equal. auto 10.
+Qed.
+
+Example reduces :
+  <{ equal 4 4 }> -->* 1.
+Proof.
+
+Admitted.
+
+Example reduces2 :
+  <{ equal 4 5 }> -->* 0.
+Proof.
+(*
+  unfold equal. 
+*)
+Admitted.
+
+End FixTest3.
+
+Module FixTest4.
+
+Definition eotest :=
+  <{ let evenodd =
+           fix
+           (\eo: (Nat -> Nat) * (Nat -> Nat),
+              (\n:Nat, if0 n then 1 else (eo.snd (pred n)),
+               \n:Nat, if0 n then 0 else (eo.fst (pred n)))) in
+     let even = evenodd.fst in
+     let odd  = evenodd.snd in
+     (even 3, even 4) }>.
+
+Example typechecks :
+  <{ empty |-- eotest \in Nat * Nat }>.
+Proof. unfold eotest. eauto 30.
+Admitted.
+
+Example reduces :
+  eotest -->* <{ (0, 1) }>.
+Proof.
+(*
+  unfold eotest. eauto 10. 
+*)
+Admitted.
+
+End FixTest4.
+End Examples.
+
+(* ----------------------------------------------------------------- *)
+(** *** Progres *)
+
+(** ----------------------------------------------- **)
+(** Úloha 4 ★ Dokončte dôkaz. *)
+
+(**
+
+    Dokončte dôkaz [progress].
+    Theoréma: 
+    Predpokladajme, že empty |-- t \in T.  
+    Potom platí, že buď
+      1. t je hodnota, alebo
+      2. t --> t' pre nejaké t'.
+
+    Dôkaz: Indukciou na typovej relácii.
+*)
+
+Theorem progress : forall t T,
+     <{ empty |-- t \in T }> ->
+     value t \/ exists t', t --> t'.
+Proof with eauto.
+  intros t T Ht.
+  remember empty as Gamma.
+  generalize dependent HeqGamma.
+  induction Ht; intros HeqGamma; subst.
+  - (* T_Var *)
+    (* Pravidlo [T_Var] nemôže byť posledným krokom v danom 
+      dôkaze, pretože z prázdneho kontextu nikdy 
+      nedokážeme tvrdenie [empty |-- x : T]. *)
+    discriminate H.
+  - (* T_Abs *)
+    (* Ak je možné použiť pravidlo [T_Abs] ako posledné, potom
+       [t = \ x0 : T2, t1], je hodnota. *)
+    left...
+  - (* T_App *)
+    (* Ak bolo posledným použitým pravidlom T_App, potom musí platiť
+       [t = t1 t2]. Z pravidla vieme, že
+         [empty |-- t1 \in T1 -> T2]
+         [empty |-- t2 \in T1].
+       Indukčný predpoklad nám hovorí, že t1 aj t2 sú buď hodnoty,
+       alebo môžu vykonať jeden krok redukcie. *)
+    right.
+    destruct IHHt1; subst...
+    + (* t1 je hodnota *)
+      destruct IHHt2; subst...
+      * (* t2 je hodnota *)
+        (* Ak sú t1 aj t2 hodnoty, musí platiť, že
+   [t1 = \x0 : T0, t11], pretože iba abstrakcie môžu byť hodnotami
+   funkčného typu.  Z pravidla [ST_AppAbs] potom dostávame
+   redukciu [(\x0 : T0, t11) t2 --> [x := t2] t11]. *)
+        destruct H; try solve_by_invert.
+        exists <{ [x0 := t2]t1 }>...
+      * (* t2 sa redukuje *)
+        (* Ak [t1] je hodnota a [t2 --> t2'],
+           potom [t1 t2 --> t1 t2'] pomocou [ST_App2]. *)
+        destruct H0 as [t2' Hstp]. exists <{t1 t2'}>...
+    + (* t1 sa redukuje *)
+      (* Ak [t1 --> t1'], potom [t1 t2 --> t1' t2]
+         pomocou [ST_App1]. *)
+      destruct H as [t1' Hstp]. exists <{t1' t2}>...
+  - (* T_Nat *)
+    left...
+  - (* T_Succ *)
+    right.
+    destruct IHHt...
+    + (* t1 je hodnota *)
+      destruct H; try solve_by_invert.
+      exists <{ $(S n) }>...
+    + (* t1 sa redukuje *)
+      destruct H as [t' Hstp].
+      exists <{succ t'}>...
+  - (* T_Pred *)
+    right.
+    destruct IHHt...
+    + (* t1 je hodnota *)
+      destruct H; try solve_by_invert.
+      exists <{ $(n - 1) }>...
+    + (* t1 redukuje *)
+      destruct H as [t' Hstp].
+      exists <{pred t'}>...
+  - (* T_Mult *)
+    right.
+    destruct IHHt1...
+    + (* t1 je hodnota *)
+      destruct IHHt2...
+      * (* t2 je hodnota *)
+        destruct H; try solve_by_invert.
+        destruct H0; try solve_by_invert.
+        exists <{ $(n * n0) }>...
+      * (* t2 sa redukuje *)
+        destruct H0 as [t2' Hstp].
+        exists <{t1 * t2'}>...
+    + (* t1 sa redukuje *)
+      destruct H as [t1' Hstp].
+      exists <{t1' * t2}>...
+  - (* T_Test0 *)
+    right.
+    destruct IHHt1...
+    + (* t1 je hodnota *)
+      destruct H; try solve_by_invert.
+      destruct n as [|n'].
+      * (* n1=0 *)
+        exists t2...
+      * (* n1<>0 *)
+        exists t3...
+    + (* t1 sa redukuje *)
+      destruct H as [t1' H0].
+      exists <{if0 t1' then t2 else t3}>...
+  - (* T_Inl *)
+    destruct IHHt...
+    + (* t1 sa redukuje *)
+      right. destruct H as [t1' Hstp]...
+      (* exists (tm_inl _ t1')... *)
+  - (* T_Inr *)
+    destruct IHHt...
+    + (* t1 sa redukuje *)
+      right. destruct H as [t1' Hstp]...
+      (* exists (tm_inr _ t1')... *)
+  - (* T_Case *)
+    right.
+    destruct IHHt1...
+    + (* t0 je hodnota *)
+      destruct H; try solve_by_invert.
+      * (* t0 je inl *)
+        exists <{ [x1:=v]t1 }>...
+      * (* t0 je inr *)
+        exists <{ [x2:=v]t2 }>...
+    + (* t0 sa redukuje *)
+      destruct H as [t0' Hstp].
+      exists <{case t0' of | inl x1 => t1 | inr x2 => t2}>...
+  - (* T_Nil *)
+    left...
+  - (* T_Cons *)
+    destruct IHHt1...
+    + (* head je hodnota *)
+      destruct IHHt2...
+      * (* tail sa redukuje *)
+        right. destruct H0 as [t2' Hstp].
+        exists <{t1 :: t2'}>...
+    + (* head sa redukuje *)
+      right. destruct H as [t1' Hstp].
+      exists <{t1' :: t2}>...
+  - (* T_Lcase *)
+    right.
+    destruct IHHt1...
+    + (* t1 je hodnota *)
+      destruct H; try solve_by_invert.
+      * (* t1=tm_nil *)
+        exists t2...
+      * (* t1=tm_cons v1 v2 *)
+        exists <{ [x2:=v2]([x1:=v1]t3) }>...
+    + (* t1 steps *)
+      destruct H as [t1' Hstp].
+      exists <{case t1' of | nil => t2 | x1 :: x2 => t3}>...
+  - (* T_Unit *)
+    left...
+  
+  (* Dokončte dôkaz *)
+
+  - (* dvojice *)
+    destruct IHHt1...
+    + destruct IHHt2...
+      * right. destruct H0 as [t2' Hstp].
+        exists <{(t1, t2')}>...
+    + right. destruct H as [t1' Hstp].
+      exists <{(t1', t2)}>...
+  - (* T_Fst *)
+    right.
+    destruct IHHt...
+    + destruct H; try solve_by_invert.
+      exists v1...
+    + destruct H as [t' Hstp].
+      exists <{t'.fst}>...
+  - (* T_Snd *)
+    right.
+    destruct IHHt...
+    + destruct H; try solve_by_invert.
+      exists v2...
+    + destruct H as [t' Hstp].
+      exists <{t'.snd}>...
+  - (* T_Let *)
+    right.
+    destruct IHHt1; subst.
+    + auto.
+    + (* case: t1 is a value *)
+      exists <{ [x0 := t1] t2 }>.
+      apply ST_LetValue.
+      assumption.
+    + (* case: t1 takes a step *)
+      destruct H as [t1' Hstp].
+      exists <{ let x0 = t1' in t2 }>.
+      apply ST_Let1.
+      assumption.
+  - (* T_Fix *)
+    right.
+    destruct IHHt...
+    + destruct H; try solve_by_invert.
+      eexists. apply ST_FixAbs.
+    + destruct H as [t' Hstp].
+      exists <{fix t'}>.
+      apply ST_Fix1. assumption.
+Qed.
+
+(* ================================================================= *)
+(** ** Weakening *)
+
+Lemma weakening : forall Gamma Gamma' t T,
+     includedin Gamma Gamma' ->
+     <{ Gamma  |-- t \in T }> ->
+     <{ Gamma' |-- t \in T }>.
+Proof.
+  intros Gamma Gamma' t T H Ht.
+  generalize dependent Gamma'.
+  induction Ht; eauto 7 using includedin_update.
+Qed.
+
+Lemma weakening_empty : forall Gamma t T,
+     <{ empty |-- t \in T }> ->
+     <{ Gamma |-- t \in T }>.
+Proof.
+  intros Gamma t T.
+  eapply weakening.
+  discriminate.
+Qed.
+
+(** ----------------------------------------------- **)
+(** Úloha 5 ★ Dokončte dôkaz. *)
+
+(* ----------------------------------------------------------------- *)
+(** Substitúcia *)
+Lemma substitution_preserves_typing : forall Gamma x U t v T,
+  <{ x |-> U ; Gamma |-- t \in T }> ->
+  <{ empty |-- v \in U }>  ->
+  <{ Gamma |-- [x:=v]t \in T }>.
+Proof with eauto.
+  intros Gamma x U t v T Ht Hv.
+  generalize dependent Gamma. generalize dependent T.
+  (* Dôkaz: Indukciou na terme [t].  Väčšina prípadov
+     vychádza priamo z indukčného predpokladu, s výnimkou
+     [var] a [abs]. Tieto nie sú automatické, pretože musíme
+     uvažovať o tom, ako spolu interagujú premenné.
+     Dôkazy týchto prípadov sú podobné ako v STLC.
+  *)
+
+  induction t; intros T Gamma H;
+  (* v každom poddôkaze, potrebujeme opvodenie H *)
+    inversion H; clear H; subst; simpl; eauto.
+  - (* var *)
+    rename s into y. destruct (eqb_spec x y); subst.
+    + (* x=y *)
+      rewrite update_eq in H2.
+      injection H2 as H2; subst.
+      apply weakening_empty. assumption.
+    + (* x<>y *)
+      apply T_Var. rewrite update_neq in H2; auto.
+  - (* abs *)
+    rename s into y, t into S.
+    destruct (eqb_spec x y); subst; apply T_Abs.
+    + (* x=y *)
+      rewrite update_shadow in H5. assumption.
+    + (* x<>y *)
+      apply IHt.
+      rewrite update_permute; auto.
+
+  - (* tm_case *)
+    rename s into x1, s0 into x2.
+    eapply T_Case...
+    + (* left arm *)
+      destruct (eqb_spec x x1); subst.
+      * (* x = x1 *)
+        rewrite update_shadow in H8. assumption.
+      * (* x <> x1 *)
+        apply IHt2.
+        rewrite update_permute; auto.
+    + (* right arm *)
+      destruct (eqb_spec x x2); subst.
+      * (* x = x2 *)
+        rewrite update_shadow in H9. assumption.
+      * (* x <> x2 *)
+        apply IHt3.
+        rewrite update_permute; auto.
+  - (* tm_lcase *)
+    rename s into y1, s0 into y2.
+    eapply T_Lcase...
+    destruct (eqb_spec x y1); subst.
+    + (* x=y1 *)
+      destruct (eqb_spec y2 y1); subst.
+      * (* y2=y1 *)
+        repeat rewrite update_shadow in H9.
+        rewrite update_shadow.
+        assumption.
+      * rewrite update_permute in H9; [|assumption].
+        rewrite update_shadow in H9.
+        rewrite update_permute;  assumption.
+    + (* x<>y1 *)
+      destruct (eqb_spec x y2); subst.
+      * (* x=y2 *)
+        rewrite update_shadow in H9.
+        assumption.
+      * (* x<>y2 *)
+        apply IHt3.
+        rewrite (update_permute _ _ _ _ _ _ n0) in H9.
+        rewrite (update_permute _ _ _ _ _ _ n) in H9.
+        assumption.
+  - (* Dokončte dôkaz *)
+    rename s into y.
+    destruct (eqb_spec x y); subst.
+    + eapply T_Let.
+      -- eapply IHt1; eassumption.
+      -- rewrite update_shadow in H6. exact H6.
+    + eapply T_Let.
+      -- eapply IHt1; eassumption.
+      -- apply IHt2.
+        rewrite (update_permute _ _ _ _ _ _ n) in H6.
+        exact H6.
+Qed.
+
+
+(** ----------------------------------------------- **)
+(** Úloha 6 ★ Dokončte dôkaz. *)
+(* ----------------------------------------------------------------- *)
+(** Zachovanie typu *)
+
+Theorem preservation : forall t t' T,
+     <{ empty |-- t \in T }> ->
+     t --> t'  ->
+     <{ empty |-- t' \in T }>.
+Proof with eauto.
+  intros t t' T HT. generalize dependent t'.
+  remember empty as Gamma.
+  (* Dôkaz: Indukciou podľa na typovej relácii. Mnohé 
+     prípady sú kontradikčné ([T_Var], [T_Abs]).  *)
+  induction HT;
+    intros t' HE; subst; inversion HE; subst...
+  - (* T_App *)
+    inversion HE; subst...
+    + (* ST_AppAbs *)
+      apply substitution_preserves_typing with T2...
+      inversion HT1...
+  (* T_Case *)
+  - (* ST_CaseInl *)
+    inversion HT1; subst.
+    eapply substitution_preserves_typing...
+  - (* ST_CaseInr *)
+    inversion HT1; subst.
+    eapply substitution_preserves_typing...
+  - (* T_Lcase *)
+    + (* ST_LcaseCons *)
+      inversion HT1; subst.
+      apply substitution_preserves_typing with <{{List T1}}>...
+      apply substitution_preserves_typing with T1...
+
+  (* Dokončte dôkaz *)
+  - (* T_Fst *)
+    inversion HE; subst; eauto.
+    + (* ST_FstPair *)
+      inversion HT; subst; eauto.
+  - (* T_Snd *)
+    inversion HE; subst; eauto.
+    + (* ST_SndPair *)
+      inversion HT; subst; eauto.
+  - (* T_Let *)
+    inversion HE; subst; eauto.
+    + (* ST_LetValue *)
+      eapply substitution_preserves_typing; eauto.
+  - (* T_Fix *)
+    inversion HE; subst; eauto.
+    + (* ST_FixAbs *)
+      inversion HT; subst.
+      eapply substitution_preserves_typing; eauto.
+Qed.
+
+End STLCExtended.
